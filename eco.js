@@ -171,6 +171,8 @@ export function paydayEntries(wallet, now) {
   }
   // Quadra Plus renews for this month (after the pay, so the pay covers it).
   out.push(...plusRenewal(wallet, now, out.reduce((sum, e) => sum + e.amount, 0)));
+  // A member's bonus bet for this week (after the renewal that makes them one).
+  out.push(...plusBonusEntries({ ...wallet, entries: [...(wallet.entries || []), ...out] }, now));
   return out;
 }
 export { WEEK };
@@ -187,8 +189,19 @@ export { WEEK };
 // nobody opened an app is never charged. The yearly plan (PLUS.year, about
 // two months free) pays twelve months at once and renews by the year.
 // Leaving stops renewal and keeps every month already paid.
-export const PLUS = { fee: 290, year: 2_900 };
+export const PLUS = { fee: 290, year: 2_900, bonusBet: 100 };
 const PLUS_ID = m => `eco:plus:${m}`;
+// A member's weekly bonus bet: a free bet token for Quadra Play, NT$PLUS.bonusBet,
+// one each Taiwan week (from Monday) the account is a member and opens an
+// app: `eco:fb:<Monday>`, kind 'freebet', amount 0, its value in the note
+// (the kit's freeBets reads it like Rewards' tokens; a week missed isn't
+// paid later). Only this Worker can write it.
+export const bonusBetId = now => `eco:fb:${new Date(weekStart(now) + TPE).toISOString().slice(0, 10)}`;
+export function plusBonusEntries(wallet, now) {
+  const id = bonusBetId(now);
+  if (!plusMember(wallet, now) || (wallet?.entries || []).some(e => e.id === id)) return [];
+  return [{ id, t: now, app: 'eco', kind: 'freebet', amount: 0, note: String(PLUS.bonusBet) }];
+}
 const plusSetting = wallet => wallet?.settings?.plus?.value || {};
 const plusOn = wallet => plusSetting(wallet).on === true;
 export const plusMember = (wallet, now) => (wallet?.entries || []).some(e => e.id === PLUS_ID(taipeiMonth(now)) && e.app === 'eco');
@@ -633,7 +646,9 @@ async function ecoPlus(ctx) {
       const paid = mergeWallet(w, { entries: paydayEntries(w, now) });
       const join = on ? plusJoinEntries(paid, now, plan) : [];
       if (join.length && poolBalance(paid) + join.reduce((sum, e) => sum + e.amount, 0) < 0) return (refused = 'ECO_PLUS_FUNDS'), w;
-      return mergeWallet(paid, { entries: join, settings: { plus: { value: { on, plan, t: now }, t: now } } });
+      const joined = mergeWallet(paid, { entries: join, settings: { plus: { value: { on, plan, t: now }, t: now } } });
+      // This week's bonus bet comes with joining.
+      return mergeWallet(joined, { entries: plusBonusEntries(joined, now) });
     },
     { skipIf: () => refused }
   );
